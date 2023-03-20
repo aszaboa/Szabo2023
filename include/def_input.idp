@@ -1,0 +1,166 @@
+
+load "PETSc-complex"
+
+load "msh3"
+macro dimension()3L//
+include "macro_ddm.idp"
+load "Element_P3"
+
+IFMACRO(!VelFE)
+    macro VelFE() P2//EOM 
+ENDIFMACRO
+IFMACRO(VelFE,P2)
+    macro PresFe() P1//EOM
+    if(mpirank==0)
+        cout << "Default P2-P1 FE space is used" << endl;
+ENDIFMACRO
+IFMACRO(VelFE,P3L)
+    macro PresFe() P2//EOM
+    if(mpirank==0)
+        cout << "P3-P2 FE space is used" << endl;
+ENDIFMACRO
+IFMACRO(VelFE,P4L)
+    load "Element_P4"
+    macro PresFe() P2//EOM
+    if(mpirank==0)
+        cout << "P4-P2 FE space is used" << endl;
+ENDIFMACRO
+
+/* vectorial FE space definition */
+/* for Blasius - P4 does not work */
+func Pb2 = [P3L, P3L];
+func Pc = [VelFE, VelFE, PresFe];
+
+/* mesh and FE function definition */
+meshL thL;
+meshL thLGlobal;
+fespace VhC(thL,Pc);
+fespace VhCGlobal(thLGlobal,Pc);
+fespace VhBGlobal(thLGlobal,Pb2);
+
+/* var for distributed mesh - global mesh numbering */
+int[int] rest;
+int[int] n2othL;                                             // need to know how to go from the local to the global mesh
+macro thLN2O()n2othL//                                       // macro name shoud coincide the mesh used: "meshname"N2O
+
+/* Blasius solution and Base flow variable */
+VhBGlobal<complex> [fG1,fG2];
+VhBGlobal<complex> [UBlas,VBlas];
+
+/* PSE related variable & macros */
+VhC<complex> [uBF, vBF, pBF];
+VhC<complex> [uBFx, vBFx, pBFx];
+macro gendef(u)[u, u#B, u#C]//EOM
+macro geninit(i)[i, i, i]//EOM
+VhC<complex> gendef(usol), gendef(usolPrev), gendef(usolPrevprev), gendef(usol2Evalrhs);
+complex[int] rhsvec, rhsvecPETSc, usolPETSc, usol2EvalrhsPETSc, auxvecPETSc, auxvecPETSc2;
+VhCGlobal<complex>  gendef(uReduce);
+
+/* distributed matrices */
+Mat<complex> dJ;
+Mat<complex> dM;
+Mat<complex> dMvel;
+
+/* run name to save files to */
+string runName = getARGV("-runName", "test0");
+/* save alpha and growth rate to output files*/
+bool saveSolution = (getARGV("-saveSolution",0)==1);
+/* runtime to output */
+real runtime;
+
+/* -------------------------------------------- */
+/* x-y discretization */
+/* -------------------------------------------- */
+real yMin = 0.;
+real yHalf= getARGV("-yHalf", 6.);
+real yMax = getARGV("-yMax", 100.);
+int npMesh = getARGV("-npMesh", 200);
+real ReStart = getARGV("-Re1", 400.);
+real ReEnd = getARGV("-ReEnd", 1100.);
+int Nx = getARGV("-Nx", 70);
+real[int] xVec;
+macro linspace(vec,xmin,xmax,n){
+
+    vec.resize(n);
+    if(n>1){
+        real dx = (xmax - xmin)/(n - 1.);
+        vec[0] = xmin;
+        for(int i=1; i<n; i++){
+            vec[i] = vec[i-1] + dx;
+        }
+    } else {
+        vec[0] = xmin;
+    }
+
+}//EOM 
+linspace(xVec,sqrt(ReStart),sqrt(ReEnd^2 / ReStart),Nx);
+xVec .*= xVec;
+real nu = 1./ReStart;
+
+/* -------------------------------------------- */
+/* Eigenvalue solution parameters */
+/* -------------------------------------------- */
+complex[int] alphaVec(Nx);
+complex[int] energVec(Nx);
+real F = getARGV("-F", 86.);
+F *= 1e-6;
+real omega = F * ReStart;
+real shiftr = getARGV("-shiftr", 0.101); 
+real shifti = getARGV("-shifti", 0.0029);
+complex shift = shiftr + 1i*shifti;
+int nEV = getARGV("-nEV", 1);
+int nKryl = getARGV("-nKryl", 10);
+complex alpha;
+
+/* -------------------------------------------- */
+/* PSE solution parameters and variables */
+/* -------------------------------------------- */
+int nstep;
+int niter;
+/* maximum number of iterations for alpha */ 
+int maxiter = getARGV("-maxiter",10); 
+/* tolerance of the integral criterion separating the growth */ 
+real intnormtol = getARGV("-intnormtol",1e-7); 
+/* tolerance for alpha step during the iteration */
+real dalphatol = getARGV("-dalphatol", 1e-9);
+
+real dxCoeffLHS;
+bool iterSolver = (getARGV("-iterSolver",0)==1);
+bool nonzeroInitialGuess= (getARGV("-nonzeroInitialGuess", 1)==1);
+
+/* solver options */
+real kspAtol = getARGV("-ksp_atol", 1e-12);
+int kspMaxIt = getARGV("-ksp_max_it", 10);
+real kspRtol = getARGV("-ksp_rtol", 1e-10);
+string linsolvePar = "-ksp_type preonly -pc_type lu -pc_factor_mat_solver_type mumps -ksp_reuse_preconditioner false -ksp_initial_guess_nonzero false ";
+string linsolveParIter = "-ksp_type fgmres -pc_type lu -pc_factor_mat_solver_type mumps -ksp_reuse_preconditioner true -ksp_initial_guess_nonzero " + 
+    (nonzeroInitialGuess ? "true" : "false" ) + " -ksp_monitor -ksp_atol " + kspAtol + " -ksp_rtol " + kspRtol + " -ksp_max_it " + kspMaxIt + " ";
+
+/* -------------------------------------------- */
+/* PSE varf definition */
+/* -------------------------------------------- */
+
+/*  incomp. PSE A matrix varf - LHS */ 
+
+macro zetaPSE() (1i*(alpha*uBF-omega)+alpha^2*nu) //EOM
+varf AhatPSE([u1, u2, p], [v1, v2, q]) = int1d(thL)(
+
+    zetaPSE*u1*v1 + uBFx*u1*v1 + dy(uBF)*u2*v1 + 1i*alpha*p*v1 +                                            /* A first row */
+    vBF*dy(u1)*v1 + nu*dy(u1)*dy(v1) +                                                                      /* B+C+D+E first row */
+    
+    zetaPSE*u2*v2 + dy(vBF)*u2*v2 +                                                                         /* A second row */
+    vBF*dy(u2)*v2 - p*dy(v2) + nu*dy(u2)*dy(v2) +                                                           /* B+C+D+E second row */
+ 
+    1i*alpha*u1*q + dy(u2)*q +                                                                              /* A+B+C+D+E fourth row */
+    
+    ((uBF-2*1i*alpha*nu)*(u1*v1  + u2*v2) +  (p*v1 + u1*q))*dxCoeffLHS                                      /* F matrix */
+    )
+    + on(1, u1 = 0., u2 = 0.)                                                                               /* bot wall */ 
+    + on(2, u1 = 0., u2 = 0.);                                                                              /* Free stream */ 
+    
+/*  incomp. PSE b vector varf - RHS */ 
+varf bhatPSE([u1, u2, p], [v1, v2, q]) = int1d(thL)(
+    (uBF-2*1i*alpha*nu)*(usol2Evalrhs*v1  + usol2EvalrhsB*v2) +  (usol2EvalrhsC*v1 +usol2Evalrhs*q)         /* F matrix */
+    )
+    + on(1, u1 = 0., u2 = 0.)                                                                               /* bot wall */ 
+    + on(2, u1 = 0., u2 = 0.);                                                                              /* Free stream */ 

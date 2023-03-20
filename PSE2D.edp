@@ -1,0 +1,36 @@
+//  run with MPI:  ff-mpirun -np 1 script.edp
+
+include "include/def_input.idp"
+
+include "include/macro_function.idp"
+
+setupMesh(yMin,yMax,yHalf,thL,thLGlobal)
+
+calcBlasius
+
+setupMatPSE
+
+calcOS(alpha,usol)
+
+PSEsetupIC
+
+if(mpirank==0)
+    cout<< " ######################### PSE marching started ######################### " << endl; 
+
+runtime = mpiWtime();
+        
+for(int i = 1; i < xVec.n; i++){
+    
+    PSEinitstep
+    
+    PSEstep(alpha);
+    
+    PSEfinalizestep
+
+}
+
+PSEfinalizerun
+
+runtime = mpiWtime() - runtime;
+if(mpirank==0)
+    cout<< " ######################## PSE marching successfully finished in " << runtime << " seconds ######################### " << endl; 
