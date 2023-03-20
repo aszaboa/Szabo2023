@@ -10,7 +10,7 @@ TODO: bibtex entry
 
 ## Code description
 ### Dependencies
-Make sure you have access to a recent [FreeFEM](https://freefem.org/), compiled with the `PETSc` and `PETSc-complex` **(with SLEPc)** plugins. More details about the [PETSc](https://www.mcs.anl.gov/petsc/petsc-current/docs/manual.pdf) and [SLEPc](http://slepc.upv.es/documentation/slepc.pdf) options used in the solvers may be found in their respective manual.
+Make sure you have access to a recent [FreeFEM](https://freefem.org/), compiled with the `PETSc` and `PETSc-complex` **(with SLEPc)** plugins. More details about the [PETSc](https://petsc.org/release/docs/manual/manual.pdf) and [SLEPc](http://slepc.upv.es/documentation/slepc.pdf) options used in the solvers may be found in their respective manual.
 ### Running the code
 The simulation can be run by the commands specified in the `run_PSE2D.sh` file, which was run under Ubuntu 18.04LTS to obtain the results. Then, the Matlab code `postprocess/run_Postprocess.m` can be run to generate the figure in the paper. 
 ### Code structure
