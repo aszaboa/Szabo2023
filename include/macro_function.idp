@@ -1,0 +1,424 @@
+
+/* ################################################################################## */
+/* ################################### mesh macros ################################## */
+/* ################################################################################## */
+/* macro setting up the meshes */
+macro setupMesh(y0,y1,yhalf,th,thG) {
+
+    border yline(t=0,1){x=0.;y=t;}
+    meshL thLTemp=buildmeshL(yline(npMesh));
+    
+    real aa = y1*yhalf/(y1-2.*yhalf);
+    real bb = 1. + aa/y1;
+    th=movemesh(thLTemp, [x,y*aa/(bb-y),0]);
+    thG = th;
+    if(mpirank==0) 
+        cout << "initial mesh setup, number of triangles: " + th.nt + ", number of vertices: " + th.nv + ", max. edge size: " + th.hmax + ", min. edge size: " + th.hmin << endl;
+    
+    [fG1,fG2] = [fG1,fG2];
+    [UBlas,VBlas] = [UBlas,VBlas];
+
+}//EOM 
+
+/* ---------------------------------------------------------------------------------- */
+/* restrict: local-global numbering macro */
+macro myRestrict(restIndices,feSpaceDist,feSpaceGlob,n2omacro)
+    if(mpisize==1){
+        restIndices.resize(feSpaceGlob.ndof);
+        for [m, restIndicesm:restIndices]
+            restIndicesm = m;
+    } else {
+        restIndices = restrict(feSpaceDist, feSpaceGlob, n2omacro); 
+    }
+//EOM
+
+/* ---------------------------------------------------------------------------------- */
+/* collect solution from the distributed mesh to the global mesh */
+macro sendvecDistributed2Global(vecdist,veczero){
+    VhC<complex> gendef(locsol);
+    locsol[] = vecdist[];
+    /* scaling with partition of unity */
+    locsol[].re .*= dJ.D;   
+    locsol[].im .*= dJ.D;  
+    /* local -> global with indexing */
+    for[i, v : rest] uReduce[][v] = locsol[][i];
+    mpiAllReduce(uReduce[], veczero[], mpiCommWorld, mpiSUM);    
+}//EOM 
+
+/* ---------------------------------------------------------------------------------- */
+/* distribute solution from the global mesh to the distributed mesh */
+macro sendvecGlobal2Distributed(veczero,vecdist)
+        for[j, v : rest] vecdist[][j] = veczero[][v];  
+//EOM
+
+/* ---------------------------------------------------------------------------------- */
+/* macro writing output to file */
+macro exportVec(vec,fname)
+    if(mpirank==0){
+        ofstream ofile(fname + ".dat");
+        ofile.precision(16);
+        ofile << vec.n << endl;
+        ofile << vec << endl;
+    }
+//EOM
+
+/* ################################################################################## */
+/* ######################## Solution of the Blasius equation ######################## */
+/* ################################################################################## */
+macro calcBlasius() {
+    
+    runtime = mpiWtime();
+    if(mpirank==0)
+        cout<< " ######################### Blasius solution started ######################### " << endl; 
+
+    /* new mesh for (P3-P3) discretization to solve the Blasius equation */
+    meshL thL2 = thL;
+    fespace VhB(thL2,Pb2);
+    VhB<complex> [f1, f2];
+
+    /* VARiational Formulation: residual and Jacobian */
+    varf Resid([u1, u2], [v1, v2]) = int1d(thL2)(
+          -dy(f1)*v1 + f2*v1
+           +0.5*dy(f2)*f1*v2 - dy(f2)*dy(v2))
+    + on(1, u1 = f1-0.)     /*  wall */
+    + on(2, u2 = f2-1.)     /*  free stream  */
+    + on(1, u2 = f2-0.);    /*  wall */
+    varf Jacob([u1, u2], [v1, v2]) = int1d(thL2)(
+          -1.*dy(u1)*v1 + u2*v1
+           +0.5*dy(f2)*u1*v2 - dy(u2)*dy(v2) +0.5*dy(u2)*f1*v2)
+    + on(1, u1 = f1-0.)     /*  wall */
+    + on(2, u2 = f2-1.)     /*  free stream  */
+    + on(1, u2 = f2-0.);    /*  wall */
+
+    /* definitions for the distributed mesh */
+    int[int] n2othL2;
+    NewMacro thL2N2O() n2othL2 EndMacro
+    Mat<complex> dJ2;
+    NewMacro def(u) [u, uB] EndMacro 
+    NewMacro init(i) [i, i] EndMacro 
+    createMat(thL2, dJ2, Pb2)
+
+    /* solver: MUMPS LU*/
+    set(dJ2, sparams = "-ksp_type preonly -pc_type lu -pc_factor_mat_solver_type mumps ");
+
+    /* initial condition */
+    [f1, f2] = [y, 1];
+
+    /* fucntions for the SNES solver: returning the residual & setting the Jacobian */
+    func complex[int] funcRes(complex[int]& inPETSc) {
+        ChangeNumbering(dJ2, f1[], inPETSc, inverse = true, exchange = true);
+        complex[int] out(VhB.ndof);
+        out = Resid(0, VhB, tgv = -1);
+        complex[int] outPETSc;
+        ChangeNumbering(dJ2, out, outPETSc);
+        return outPETSc;
+    }
+    func int funcJ(complex[int]& inPETSc) {
+        ChangeNumbering(dJ2, f1[], inPETSc, inverse = true, exchange = true);
+        dJ2 = Jacob(VhB, VhB, tgv = -1);
+        return 0;
+    }
+
+    /* solution with 2nd order line-search method (Newton-Raphson technique) */
+    complex[int] xPETSc;
+    ChangeNumbering(dJ2, f1[], xPETSc);
+    SNESSolve(dJ2, funcJ, funcRes, xPETSc, sparams =  "-snes_monitor  -snes_max_it 20 -snes_linesearch_monitor -snes_linesearch_order 2 -snes_atol 1e-10 -snes_rtol 1e-10 -snes_stol 1e-10 -snes_converged_reason");
+    ChangeNumbering(dJ2, f1[], xPETSc, inverse = true, exchange = true);
+
+    /* distribued -> global */
+    int[int] rest = restrict(VhB, VhBGlobal, n2othL2);
+    f1[].re .*= dJ2.D;
+    f1[].im .*= dJ2.D;
+    VhBGlobal<complex> [fReduce1,fReduce2];
+    for[i, v : rest] fReduce1[][v] = f1[][i];
+    mpiAllReduce(fReduce1[], fG1[], mpiCommWorld, mpiSUM);
+
+    /* calculation of the self-similar velocities from the solution of the Blasius equation */
+    [UBlas,VBlas] = [fG2, 0.5*(y*fG2 - fG1)];
+    
+    runtime = mpiWtime() - runtime;
+    if(mpirank==0)
+        cout<< " ######################## Blasius solution successfully finished in " << runtime << " seconds ######################### " << endl; 
+
+}//EOM 
+
+/* ################################################################################## */
+/* ########################## Solution of the OS equation ########################### */
+/* ################################################################################## */
+macro calcOS(alphaIn,eVecIn) {
+    
+    runtime = mpiWtime(); 
+    if(mpirank==0)
+        cout<< " ######################### Orr-Sommerfeld solution started ######################### " << endl; 
+    
+    /* VARiational Formulation: cofficient matrices */
+    varf A0mat([u1, u2, p], [v1, v2, q]) = int1d(thL)(
+        -1i*omega*u1*v1 + nu*(dy(u1)*dy(v1)) + dy(UBlas)*u2*v1
+        -1i*omega*u2*v2 + nu*(dy(u2)*dy(v2)) + dy(p)*v2 +
+        dy(u2)*q)
+    + on(1, u1 = 0., u2 = 0.)                              /*  bot wall */
+    + on(2, u1 = 0., u2 = 0.);                             /*  Free-stream */
+
+    varf A1mat([u1, u2, p], [v1, v2, q]) = int1d(thL)(
+        1i*UBlas*u1*v1 + 1i*p*v1 +
+        1i*UBlas*u2*v2 +
+        1i*u1*q)
+    + on(1, u1 = 0., u2 = 0.)                              /*  bot wall */
+    + on(2, u1 = 0., u2 = 0.);                             /*  Free-stream */
+
+    varf A2mat([u1, u2, p], [v1, v2, q]) = int1d(thL)(
+        nu*u1*v1 +
+        nu*u2*v2)
+    + on(1, u1 = 0., u2 = 0.)                              /*  bot wall */
+    + on(2, u1 = 0., u2 = 0.);                             /*  Free-stream */
+
+    /* matrix definition and value assignment */
+    Mat<complex>[int] Apep(3);
+    createMat(thL, Apep[0], Pc)
+    createMat(thL, Apep[1], Pc)
+    createMat(thL, Apep[2], Pc)
+
+    Apep[2] = A2mat(VhC,VhC,tgv=-1);
+    Apep[1] = A1mat(VhC,VhC,tgv=-1);
+    Apep[0] = A0mat(VhC,VhC,tgv=-1);
+
+    /* solution variable definition */
+    VhC<complex>[int] def(eigenvecVec)(nEV);
+    complex[int]  eigvalVec(nEV);
+    real[int]  errestVec(nEV);  
+    /* solver parameters */
+    string PEPParamsbase =
+      " -pep_basis monomial " +
+      " -pep_general " +
+      " -st_type sinvert "     +
+      " -st_pc_type lu "       +
+      " -st_pc_factor_mat_solver_type mumps  "       +
+      " -pep_monitor_all"      ;
+    string PEPspar = PEPParamsbase + " -pep_target " + shift +
+      " -pep_nev " + nEV       +
+      " -pep_ncv " + nKryl + " ";
+
+    /* Polynomial Eigenvalue Problem (PEP) solution */
+    int nEvalConv = PEPSolve(Apep, vectors = eigenvecVec, values = eigvalVec, sparams = PEPspar);
+    
+    alphaIn = eigvalVec[0];
+    eVecIn[] = eigenvecVec[0][];
+    
+    runtime = mpiWtime() - runtime;
+    if(mpirank==0)
+        cout<< " ######################### Orr-Sommerfeld solution successfully finished in " << runtime << " seconds ######################### " << endl; 
+}//EOM 
+
+/* ################################################################################## */
+/* ################################### PSE macros  ################################## */
+/* ################################################################################## */
+
+/* macro: setting up macros, matrices, and resizing the variables */
+macro setupMatPSE()
+    NewMacro def(u) gendef(u) EndMacro 
+    NewMacro init(i) geninit(i) EndMacro 
+    createMat(thL, dJ, Pc)
+    createMat(thL, dM, Pc)
+    createMat(thL, dMvel, Pc)
+    
+    myRestrict(rest,VhC, VhCGlobal, n2othL);
+    
+    {
+        varf fullMassMatvarf([u1, u2, p], [v1, v2, q]) = int1d(thL)(u1*v1+u2*v2+p*q);
+        dM = fullMassMatvarf(VhC,VhC);
+        varf velMassMatvarf([u1, u2, p], [v1, v2, q]) = int1d(thL)(u1*v1+u2*v2);
+        dMvel = velMassMatvarf(VhC,VhC);
+    }
+    gendef(usolPrev) = gendef(usolPrev);
+    gendef(usol) = gendef(usol);
+    gendef(usol2Evalrhs) = gendef(usol2Evalrhs);
+    gendef(uReduce) = gendef(uReduce);
+    rhsvec.resize(VhC.ndof);
+    
+    changeNumbering(dJ,usol[], rhsvecPETSc);
+    changeNumbering(dJ,usol[], usolPETSc);
+    changeNumbering(dJ,usol[], usol2EvalrhsPETSc);
+    changeNumbering(dJ,usol[], auxvecPETSc);
+    changeNumbering(dJ,usol[], auxvecPETSc2);
+    
+    {
+        if(mpirank==0) {
+            cout << " ##################################################" << endl;
+            cout << "Distributed mesh for PSE was created successfully. ";
+        }
+        int nTotal, nLocal = usol[].n;
+        mpiAllReduce(nLocal, nTotal, mpiCommWorld, mpiSUM);
+        if(mpirank==0)
+            cout << "nDOF in FreeFem numbering=" << nTotal;
+        nLocal = usolPETSc.n;
+        mpiAllReduce(nLocal, nTotal, mpiCommWorld, mpiSUM);
+        if(mpirank==0) {
+            cout << ", nDOF in PETSc numbering=" << nTotal << endl;
+            cout << " ##################################################" << endl;
+        }
+        mpiBarrier(mpiCommWorld);
+    }
+    
+//EOM 
+
+/* ---------------------------------------------------------------------------------- */
+/* macro to calculate vec1' * massMat * vec2 in parallel */
+macro integrateParallel(massMat,vec1,vec2,auxvec,integralValue){
+    MatMult(massMat, vec2, auxvec);
+    complex tempDistIntegral = vec1' * auxvec;
+    mpiAllReduce(tempDistIntegral, integralValue, mpiCommWorld, mpiSUM);
+}//EOM
+
+/* ---------------------------------------------------------------------------------- */
+/* macro norming eigenvector to have unit kinetic energy */
+macro normEV(vecFF) {
+    changeNumbering(dJ,vecFF[], auxvecPETSc2);
+    complex normVal;
+    integrateParallel(dMvel,auxvecPETSc2,auxvecPETSc2,auxvecPETSc,normVal)
+    normVal = sqrt(2*normVal);
+    vecFF[] *= (1./normVal);
+    
+}//EOM 
+
+/* ---------------------------------------------------------------------------------- */
+/* setting up initial condition */
+macro PSEsetupIC()
+    alphaVec[0] = alpha;
+    normEV(usol) 
+    changeNumbering(dJ,usol[],usolPETSc);
+    integrateParallel(dMvel,usolPETSc,usolPETSc,auxvecPETSc,energVec[0])
+//EOM 
+
+/* ---------------------------------------------------------------------------------- */
+/* macro setting up the Base Flow at a given index in the streamwise direction */
+macro setupBF(xInd) {
+    real currentRedelta = sqrt(xVec[xInd])*sqrt(ReStart);
+    [uBF, vBF, pBF] = [UBlas(0,y*(ReStart/currentRedelta),0), VBlas(0,y*(ReStart/currentRedelta),0)*(1./currentRedelta), 0];
+    [uBFx, vBFx, pBFx] = [-dy(vBF), 0, 0];
+}//EOM 
+
+/* ---------------------------------------------------------------------------------- */
+/* PSE step initial calculation */
+macro PSEinitstep()
+    if(mpirank==0)
+        cout << " ######################## PSE step #" << i << " started ######################### " << endl;
+    real looptime = mpiWtime();
+    
+    setupBF(i)
+    usolPrevprev[] = usolPrev[];
+    usolPrev[] = usol[];
+    
+    /* RHS setup and gathering for integral criterion calculation */
+    if(i>1){ 
+        dxCoeffLHS = (1/(xVec[i]-xVec[i-2])+1/(xVec[i]-xVec[i-1]));
+        usol2Evalrhs[] = usolPrevprev[] *(1/(xVec[i]-xVec[i-2])-1/(xVec[i-1]-xVec[i-2])) + usolPrev[]*(1/(xVec[i]-xVec[i-1])+1/(xVec[i-1]-xVec[i-2]));
+    } else {
+        dxCoeffLHS = 1./(xVec[i]-xVec[i-1]);
+        usol2Evalrhs[] = usolPrev[] *(1. / (xVec[i] - xVec[i-1]));
+    }
+    changeNumbering(dJ, usol2Evalrhs[], usol2EvalrhsPETSc);
+//EOM 
+
+/* ---------------------------------------------------------------------------------- */
+/* PSE step finalization */
+macro PSEfinalizestep()
+    alphaVec[i] = alpha;   
+    integrateParallel(dMvel,usolPETSc,usolPETSc,auxvecPETSc,energVec[i])
+
+    looptime = mpiWtime() - looptime;
+    if(mpirank==0){
+        cout << " ##### PSE step #" << i << " successfully finished in " << looptime << " seconds ##### " << endl;
+        cout << " ######################################################################### " << endl;
+    }
+//EOM 
+
+/* ---------------------------------------------------------------------------------- */
+/* PSE finalize run (post-process, write output */
+macro PSEfinalizerun() 
+    real[int] aLogE(energVec.n);
+    for [i, ei: energVec] aLogE[i] = 0.5*abs(log(sqrt(ei)));
+    real[int] growthVec(energVec.n);
+    for(int i=2; i<xVec.n; i++)
+        growthVec[i] = aLogE[i-2] *(-1/(xVec[i]-xVec[i-2])+1/(xVec[i-1]-xVec[i-2])) + aLogE[i-1]*(-1/(xVec[i]-xVec[i-1])-1/(xVec[i-1]-xVec[i-2])) + aLogE[i]*(1/(xVec[i]-xVec[i-2])+1/(xVec[i]-xVec[i-1]));
+    growthVec[1] = (aLogE[1]-aLogE[0])/(xVec[1]-xVec[0]);
+    growthVec[0] = growthVec[1];
+
+    if(saveSolution) {
+        exportVec(xVec,runName + "_xVec")
+        exportVec(alphaVec,runName + "_alphaVec")
+        exportVec(growthVec,runName + "_growthVec")
+}
+//EOM 
+
+/* ---------------------------------------------------------------------------------- */
+/* function solving the PSE and calculating the auxiliary condition */
+func complex calcPSEnorm(complex &alpha, int niter){
+    
+    complex normval;
+    real loctime = mpiWtime(); 
+    
+    /* LHS/RHS setup */
+    PetscLogStagePush("RHS assembly");
+    rhsvec = bhatPSE(0,VhC, tgv = -1);
+    PetscLogStagePop();
+    PetscLogStagePush("Matrix assembly");
+    dJ = AhatPSE(VhC,VhC, tgv = -1);
+    PetscLogStagePop();
+    
+    /* solver parameters: reused LU + fGMRES or LU */
+    if(iterSolver & niter>0) 
+        set(dJ, sparams = linsolveParIter + " -ksp_initial_guess_nonzero " + (nonzeroInitialGuess ? " true " : " false ") + " -ksp_monitor ");
+    else
+        set(dJ, sparams = linsolvePar);
+
+    
+    /* solving the system */
+    changeNumbering(dJ, rhsvec, rhsvecPETSc);
+    PetscLogStagePush("Eq. Solution");
+    KSPSolve(dJ, rhsvecPETSc, usolPETSc);
+    PetscLogStagePop();
+    ChangeNumbering(dJ, usol[], usolPETSc, inverse = true, exchange = true);
+       
+       
+    /* auxiliary condition calculation 
+        since 'rhsvecPETSc' is not needed anymore, it is used to calculate
+        the derivative of x for the inner product */
+    rhsvecPETSc = usolPETSc;
+    rhsvecPETSc *= dxCoeffLHS;
+
+    rhsvecPETSc -= usol2EvalrhsPETSc;
+    /* mass matrix & integration */
+    integrateParallel(dM,usolPETSc,rhsvecPETSc,auxvecPETSc,normval)
+        
+    return normval;
+    
+}
+
+/* ---------------------------------------------------------------------------------- */
+/* PSE stepping - solving for alpha*/
+func int PSEstep(complex &alpha){
+    
+    complex fpre, f=1e30, alphapre=100+100i, dalpha = 1e2;
+    int niter = -1;
+    
+    while(niter++<maxiter & abs(f)>intnormtol & abs(dalpha)>dalphatol){
+        
+        f = calcPSEnorm(alpha, niter);
+        
+        /* fixpoint-type method - following Paredes 2014 Dissertation, which relies on the definition given by Herbert 1994 AGARD */
+        complex normSquare;
+        integrateParallel(dM,usolPETSc,usolPETSc,auxvecPETSc,normSquare)
+        dalpha = -1i*f/normSquare;
+        
+        fpre = f;
+        alphapre = alpha;
+        alpha += dalpha;
+        if(mpirank==0){
+            cout << "alpha iteration: niter = " << niter << ", |f| = " << abs(f) << ", |dalpha| = " << abs(dalpha) << ", alpha = " << alpha << endl;
+        }
+        
+    }
+    
+    return 0;
+    
+}
