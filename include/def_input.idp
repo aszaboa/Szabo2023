@@ -41,7 +41,7 @@ fespace VhBGlobal(thLGlobal,Pb2);
 /* var for distributed mesh - global mesh numbering */
 int[int] rest;
 int[int] n2othL;                                             // need to know how to go from the local to the global mesh
-macro thLN2O()n2othL//                                       // macro name shoud coincide the mesh used: "meshname"N2O
+macro thLN2O()n2othL//                                       // macro name shoud coincide the mesh: "meshname"N2O
 
 /* Blasius solution and Base flow variable */
 VhBGlobal<complex> [fG1,fG2];

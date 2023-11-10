@@ -1,7 +1,7 @@
 
 # Reused LU factorization as a preconditioner for efficient solution of the Parabolized Stability Equations
 
-> An implementation of the incompressible 2D Parabolized Stability Equations (PSE) that demonstrates the how a single LU factorization can be reused to accelerate the solution of boundary layer-type problems. The code is written in the finite element language FreeFem, which interfaces the PETSc/SLEPc libraries. Although the code was run on a single process in the study, it also work on multiple processes, using a domain-decomposition technique.  
+> An implementation of the incompressible 2D Parabolized Stability Equations (PSE) that demonstrates how a single LU factorization can be reused to accelerate the solution of boundary layer-type problems. The code is written in the finite element language FreeFem, which interfaces with the PETSc/SLEPc libraries. Although the code was run on a single process in the study, it also work on multiple processes, using a domain-decomposition technique.  
 
 The code can reproduce Fig.14a  from the following [paper:TODO](TODO:doi). If you use this code, please consider citing the paper:
 ```
@@ -10,7 +10,7 @@ TODO: bibtex entry
 
 ## Code description
 ### Dependencies
-Make sure you have access to a recent [FreeFEM](https://freefem.org/), compiled with the `PETSc` and `PETSc-complex` **(with SLEPc)** plugins. More details about the [PETSc](https://petsc.org/release/docs/manual/manual.pdf) and [SLEPc](http://slepc.upv.es/documentation/slepc.pdf) options used in the solvers may be found in their respective manual.
+Make sure you have access to a recent [FreeFEM](https://freefem.org/), compiled with the `PETSc` and `PETSc-complex` **(with SLEPc)** plugins. More details about the [PETSc](https://petsc.org/release/docs/manual/manual.pdf) and [SLEPc](http://slepc.upv.es/documentation/slepc.pdf) options used in the solvers may be found in their respective manuals.
 ### Running the code
 The simulation can be run by the commands specified in the `run_PSE2D.sh` file, which was run under Ubuntu 18.04LTS to obtain the results. Then, the Matlab code `postprocess/run_Postprocess.m` can be run to generate the figure in the paper. 
 ### Code structure
