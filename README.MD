@@ -3,9 +3,18 @@
 
 > An implementation of the incompressible 2D Parabolized Stability Equations (PSE) that demonstrates how a single LU factorization can be reused to accelerate the solution of boundary layer-type problems. The code is written in the finite element language FreeFem, which interfaces with the PETSc/SLEPc libraries. Although the code was run on a single process in the study, it also work on multiple processes, using a domain-decomposition technique.  
 
-The code can reproduce Fig.14a  from the following [paper:TODO](TODO:doi). If you use this code, please consider citing the paper:
+The code can reproduce Fig.15b  from the following [10.1016/j.compfluid.2023.106115](https://doi.org/10.1016/j.compfluid.2023.106115). If you use this code, please consider citing the paper:
 ```
-TODO: bibtex entry
+@article{Szabo2023,
+title = {Reused LU factorization as a preconditioner for efficient solution of the parabolized stability equations},
+journal = {Computers \& Fluids},
+pages = {106115},
+year = {2023},
+issn = {0045-7930},
+doi = {https://doi.org/10.1016/j.compfluid.2023.106115},
+url = {https://www.sciencedirect.com/science/article/pii/S0045793023003407},
+author = {Andr{\'a}ás Szab{\'o} and Gy{\"o}rgy Pa{\'a}l}
+}
 ```
 
 ## Code description
