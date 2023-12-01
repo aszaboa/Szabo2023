@@ -5,11 +5,12 @@
 
 The code can reproduce Fig.15b  from the following [10.1016/j.compfluid.2023.106115](https://doi.org/10.1016/j.compfluid.2023.106115). If you use this code, please consider citing the paper:
 ```
-@article{Szabo2023,
+@article{Szabo2024,
 title = {Reused LU factorization as a preconditioner for efficient solution of the parabolized stability equations},
 journal = {Computers \& Fluids},
+volume = {269},
 pages = {106115},
-year = {2023},
+year = {2024},
 issn = {0045-7930},
 doi = {https://doi.org/10.1016/j.compfluid.2023.106115},
 url = {https://www.sciencedirect.com/science/article/pii/S0045793023003407},
